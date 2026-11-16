@@ -24,7 +24,10 @@ struct MihosSysdepTags :
 	AnonFree,
 	VmMap,
 	VmUnmap,
-	TcbSet
+	TcbSet,
+	// Called unconditionally by options this port enables
+	Isatty, // stdio, for every stream (ansi)
+	Dup2    // openpty, login_tty (bsd)
 {};
 
 template<typename Tag>

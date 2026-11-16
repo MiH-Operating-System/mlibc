@@ -2,8 +2,12 @@
 # The kernel speaks Linux's ABI values (errno, O_*, signals, struct stat, ...),
 # so the ABI headers are symlinks into abis/linux.
 
+# posix plus the GNU and BSD extensions programs expect (every port enables
+# them; mlibc's posix code assumes them). No 'linux': Linux-only calls.
 sysdep_supported_options = {
 	'posix': true,
+	'glibc': true,
+	'bsd': true,
 }
 
 rtld_include_dirs += include_directories('include')
@@ -38,16 +42,21 @@ if not no_headers
 		'include/abi-bits/gid_t.h',
 		'include/abi-bits/in.h',
 		'include/abi-bits/ino_t.h',
+		'include/abi-bits/ioctls.h',
 		'include/abi-bits/ipc.h',
 		'include/abi-bits/limits.h',
 		'include/abi-bits/mode_t.h',
 		'include/abi-bits/mqueue.h',
 		'include/abi-bits/msg.h',
 		'include/abi-bits/nlink_t.h',
+		'include/abi-bits/packet.h',
 		'include/abi-bits/pid_t.h',
 		'include/abi-bits/poll.h',
+		'include/abi-bits/ptrace.h',
+		'include/abi-bits/reboot.h',
 		'include/abi-bits/resource.h',
 		'include/abi-bits/rlim_t.h',
+		'include/abi-bits/route.h',
 		'include/abi-bits/sa_family_t.h',
 		'include/abi-bits/sched_param.h',
 		'include/abi-bits/seek-whence.h',
