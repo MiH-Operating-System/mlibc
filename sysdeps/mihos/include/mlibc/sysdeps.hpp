@@ -56,7 +56,17 @@ struct MihosSysdepTags :
     Tcgetpgrp,
     Tcsetpgrp,
     Chdir,
-    GetCwd {};
+    GetCwd,
+    // D10 batch 3: files, memory, time
+    Stat,
+    Mkdir,
+    Rmdir,
+    Unlinkat,
+    Truncate,
+    Ftruncate,
+    VmProtect,
+    Brk,
+    Sleep {};
 
 template <typename Tag>
 using Sysdeps = SysdepOf<MihosSysdepTags, Tag>;

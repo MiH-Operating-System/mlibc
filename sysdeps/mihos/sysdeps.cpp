@@ -423,4 +423,75 @@ pid_t Sysdeps<GetPid>::operator()() { return syscall(SYS_GETPID); }
 
 pid_t Sysdeps<GetPpid>::operator()() { return syscall(SYS_GETPPID); }
 
+// The kernel's struct mihos_stat is the start of mlibc's x86-64 struct stat
+// (which adds __unused[3]); checked here so a change on either side fails the build
+static_assert(offsetof(struct stat, st_ctim) == 104);
+
+int Sysdeps<Stat>::operator()(
+    fsfd_target fsfdt, int fd, const char *path, int flags, struct stat *statbuf
+) {
+	// No symlinks in the VFS: AT_SYMLINK_NOFOLLOW (lstat) changes nothing
+	bool by_fd = fsfdt == fsfd_target::fd
+	             || (fsfdt == fsfd_target::fd_path && (flags & AT_EMPTY_PATH) && !path[0]);
+	if (fsfdt == fsfd_target::fd_path && !by_fd && fd != AT_FDCWD && path[0] != '/')
+		return ENOSYS; // relative to another directory: the kernel has no *at calls yet
+
+	memset(statbuf, 0, sizeof(*statbuf));
+	long ret = by_fd ? syscall(SYS_FSTAT, fd, statbuf) : syscall(SYS_STAT, path, statbuf);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Unlinkat>::operator()(int dirfd, const char *path, int flags) {
+	if (dirfd != AT_FDCWD && path[0] != '/')
+		return ENOSYS;
+	if (flags & ~AT_REMOVEDIR)
+		return EINVAL;
+	long ret = syscall(flags & AT_REMOVEDIR ? SYS_RMDIR : SYS_UNLINK, path);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Sleep>::operator()(time_t *secs, long *nanos) {
+	struct timespec request = {*secs, *nanos};
+	struct timespec left = {0, 0};
+	long ret = syscall(SYS_NANOSLEEP, &request, &left);
+	// The time left goes back in both cases: 0 when the sleep finished,
+	// what a signal cut short otherwise (the kernel writes it with -EINTR)
+	*secs = left.tv_sec;
+	*nanos = left.tv_nsec;
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Mkdir>::operator()(const char *path, mode_t mode) {
+	long ret = syscall(SYS_MKDIR, path, mode);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Rmdir>::operator()(const char *path) {
+	long ret = syscall(SYS_RMDIR, path);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Truncate>::operator()(const char *path, off_t length) {
+	long ret = syscall(SYS_TRUNCATE, path, length);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Ftruncate>::operator()(int fd, size_t size) {
+	long ret = syscall(SYS_FTRUNCATE, fd, size);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<VmProtect>::operator()(void *pointer, size_t size, int prot) {
+	long ret = syscall(SYS_MPROTECT, pointer, size, prot);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Brk>::operator()(void **out) {
+	long ret = syscall(SYS_BRK, 0);
+	if (ret < 0)
+		return -ret;
+	*out = (void *)ret;
+	return 0;
+}
+
 } // namespace mlibc
