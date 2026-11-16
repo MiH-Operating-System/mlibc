@@ -3,11 +3,13 @@
 # so the ABI headers are symlinks into abis/linux.
 
 # posix plus the GNU and BSD extensions programs expect (every port enables
-# them; mlibc's posix code assumes them). No 'linux': Linux-only calls.
+# them; mlibc's posix code assumes them). No 'linux': Linux-only calls. Of
+# Linux's pieces, reboot (<sys/reboot.h>, Linux's RB_* values), as zinnia.
 sysdep_supported_options = {
 	'posix': true,
 	'glibc': true,
 	'bsd': true,
+	'linux-reboot': true,
 }
 
 rtld_include_dirs += include_directories('include')
@@ -83,6 +85,14 @@ if not no_headers
 		'include/abi-bits/wait.h',
 		subdir: 'abi-bits',
 		follow_symlinks: true
+	)
+
+	# major/minor/makedev: the linux option's header, which programs expect
+	# without it too (ethereal and zinnia ship it the same way). MiHOS's dev_t
+	# has Linux's encoding, which mlibc's helpers decode.
+	install_headers(
+		'include/sys/sysmacros.h',
+		subdir: 'sys'
 	)
 endif
 
