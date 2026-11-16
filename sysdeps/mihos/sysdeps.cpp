@@ -5,12 +5,31 @@
 #include <limits.h> // INT_MAX
 #include <mihos/syscall.h>
 #include <mlibc/all-sysdeps.hpp>
+#include <signal.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h> // PROT_*, MAP_*
 #include <sys/reboot.h>
 #include <termios.h>
 #include <time.h>
+
+// Where a signal handler returns to: sigaction gives the kernel this address
+// (sa_restorer), and it asks the kernel to remove the handler's frame
+// clang-format off
+#define MIHOS_STRING(x) #x
+#define MIHOS_EXPAND(x) MIHOS_STRING(x)
+asm(".pushsection .text\n"
+    ".globl __mihos_signal_restore\n"
+    ".type __mihos_signal_restore, @function\n"
+    "__mihos_signal_restore:\n"
+    "\tmov $" MIHOS_EXPAND(SYS_SIGRETURN) ", %rax\n"
+	"\tint $0x80\n"
+	"\tud2\n"
+	".size __mihos_signal_restore, .-__mihos_signal_restore\n"
+	".popsection\n");
+extern "C" void __mihos_signal_restore(void);
+// clang-format on
 
 namespace mlibc {
 
@@ -202,5 +221,206 @@ int Sysdeps<Reboot>::operator()(int cmd) {
 	long ret = syscall(SYS_REBOOT, REBOOT_HALT);
 	return ret < 0 ? -ret : 0;
 }
+
+int Sysdeps<Sigprocmask>::operator()(int how, const sigset_t *set, sigset_t *retrieve) {
+	uint64_t incoming, previous;
+	if (set)
+		memcpy(&incoming, set, sizeof(incoming));
+	long ret =
+	    syscall(SYS_SIGPROCMASK, how, set ? &incoming : nullptr, retrieve ? &previous : nullptr);
+	if (ret < 0)
+		return -ret;
+	if (retrieve) {
+		memset(retrieve, 0, sizeof(*retrieve));
+		memcpy(retrieve, &previous, sizeof(previous));
+	}
+	return 0;
+}
+
+int Sysdeps<Sigpending>::operator()(sigset_t *set) {
+	uint64_t waiting;
+	long ret = syscall(SYS_SIGPENDING, &waiting);
+	if (ret < 0)
+		return -ret;
+	memset(set, 0, sizeof(*set));
+	memcpy(set, &waiting, sizeof(waiting));
+	return 0;
+}
+
+// The kernel's struct sigaction (<mihos/signal.h>, whose names clash with mlibc's)
+struct KernelSigaction {
+	void (*handler)(int);
+	unsigned long flags;
+	void (*restorer)(void);
+	uint64_t mask;
+};
+
+int
+Sysdeps<Sigaction>::operator()(int signal, const struct sigaction *act, struct sigaction *oldact) {
+	// No siginfo_t yet; ENOSYS makes mlibc skip pthread cancellation's handler
+	if (act && (act->sa_flags & SA_SIGINFO))
+		return ENOSYS;
+
+	KernelSigaction incoming, previous;
+	if (act) {
+		incoming.handler = act->sa_handler;
+		incoming.flags = (unsigned int)act->sa_flags | SA_RESTORER;
+		incoming.restorer = __mihos_signal_restore;
+		memcpy(&incoming.mask, &act->sa_mask, sizeof(incoming.mask));
+	}
+	long ret =
+	    syscall(SYS_SIGACTION, signal, act ? &incoming : nullptr, oldact ? &previous : nullptr);
+	if (ret < 0)
+		return -ret;
+	if (oldact) {
+		memset(oldact, 0, sizeof(*oldact));
+		oldact->sa_handler = previous.handler;
+		oldact->sa_flags = (int)(previous.flags & ~SA_RESTORER);
+		oldact->sa_restorer = previous.restorer;
+		memcpy(&oldact->sa_mask, &previous.mask, sizeof(previous.mask));
+	}
+	return 0;
+}
+
+int Sysdeps<Tcgetattr>::operator()(int fd, struct termios *attr) {
+	// The kernel's termios is the start of mlibc's (19 c_cc slots, no speeds)
+	memset(attr, 0, sizeof(*attr));
+	long ret = syscall(SYS_IOCTL, fd, TCGETS, attr);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Tcsetattr>::operator()(int fd, int when, const struct termios *attr) {
+	int request;
+	switch (when) {
+		case TCSANOW:
+			request = TCSETS;
+			break;
+		case TCSADRAIN:
+			request = TCSETSW;
+			break;
+		case TCSAFLUSH:
+			request = TCSETSF;
+			break;
+		default:
+			return EINVAL;
+	}
+
+	long ret = syscall(SYS_IOCTL, fd, request, attr);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Tcgetpgrp>::operator()(int fd, pid_t *pgrp_out) {
+	int32_t group;
+	long ret = syscall(SYS_IOCTL, fd, TIOCGPGRP, &group);
+	if (ret < 0)
+		return -ret;
+	*pgrp_out = group;
+	return 0;
+}
+
+int Sysdeps<Tcsetpgrp>::operator()(int fd, pid_t pgrp) {
+	// The kernel reads the group through a pointer
+	int32_t group = pgrp;
+	long ret = syscall(SYS_IOCTL, fd, TIOCSPGRP, &group);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Pipe>::operator()(int *fds, int flags) {
+	if (flags & ~O_CLOEXEC)
+		return EINVAL;
+	long ret = syscall(SYS_PIPE, fds);
+	if (ret < 0)
+		return -ret;
+	if (flags & O_CLOEXEC) {
+		ret = syscall(SYS_FCNTL, fds[0], F_SETFD, FD_CLOEXEC);
+		if (ret == 0)
+			ret = syscall(SYS_FCNTL, fds[1], F_SETFD, FD_CLOEXEC);
+
+		if (ret < 0) {
+			syscall(SYS_CLOSE, fds[0]);
+			syscall(SYS_CLOSE, fds[1]);
+			return -ret;
+		}
+	}
+	return 0;
+}
+
+int Sysdeps<Dup>::operator()(int fd, int flags, int *newfd) {
+	long ret = syscall(SYS_DUP, fd);
+	if (ret < 0)
+		return -ret;
+	*newfd = ret;
+	if (flags & O_CLOEXEC) {
+		ret = syscall(SYS_FCNTL, *newfd, F_SETFD, FD_CLOEXEC);
+		if (ret < 0) {
+			syscall(SYS_CLOSE, *newfd);
+			return -ret;
+		}
+	}
+	return 0;
+}
+
+int Sysdeps<Fcntl>::operator()(int fd, int request, va_list args, int *result) {
+	long arg = 0;
+	switch (request) {
+		case F_GETFD:
+			break;
+		case F_SETFD:
+			arg = va_arg(args, int);
+			break;
+		default:
+			return EINVAL; // the kernel knows only F_GETFD and F_SETFD
+	}
+	long ret = syscall(SYS_FCNTL, fd, request, arg);
+	if (ret < 0)
+		return -ret;
+	*result = ret;
+	return 0;
+}
+
+int Sysdeps<Kill>::operator()(pid_t pid, int signal) {
+	long ret = syscall(SYS_KILL, pid, signal);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Pause>::operator()() {
+	long ret = syscall(SYS_PAUSE);
+	return -ret;
+}
+
+int Sysdeps<SetPgid>::operator()(pid_t pid, pid_t pgid) {
+	long ret = syscall(SYS_SETPGID, pid, pgid);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<GetPgid>::operator()(pid_t pid, pid_t *pgid) {
+	long ret = syscall(SYS_GETPGID, pid);
+	if (ret < 0)
+		return -ret;
+	*pgid = ret;
+	return 0;
+}
+
+int Sysdeps<GetSid>::operator()(pid_t pid, pid_t *sid) {
+	long ret = syscall(SYS_GETSID, pid);
+	if (ret < 0)
+		return -ret;
+	*sid = ret;
+	return 0;
+}
+
+int Sysdeps<Chdir>::operator()(const char *path) {
+	long ret = syscall(SYS_CHDIR, path);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<GetCwd>::operator()(char *buffer, size_t size) {
+	long ret = syscall(SYS_GETCWD, buffer, size);
+	return ret < 0 ? -ret : 0;
+}
+
+pid_t Sysdeps<GetPid>::operator()() { return syscall(SYS_GETPID); }
+
+pid_t Sysdeps<GetPpid>::operator()() { return syscall(SYS_GETPPID); }
 
 } // namespace mlibc
