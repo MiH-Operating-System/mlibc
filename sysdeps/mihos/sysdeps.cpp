@@ -215,10 +215,11 @@ Sysdeps<ReadEntries>::operator()(int handle, void *buffer, size_t max_size, size
 }
 
 int Sysdeps<Reboot>::operator()(int cmd) {
-	// The kernel can only halt (no power off or restart yet)
-	if ((unsigned int)cmd != RB_HALT_SYSTEM)
-		return EINVAL;
-	long ret = syscall(SYS_REBOOT, REBOOT_HALT);
+	// The kernel can only halt (no power off or restart yet). Another command
+	// still goes to the kernel, which refuses a caller other than init (EPERM)
+	// before it looks at the command (EINVAL), as Linux does
+	long command = (unsigned int)cmd == RB_HALT_SYSTEM ? REBOOT_HALT : -1;
+	long ret = syscall(SYS_REBOOT, command);
 	return ret < 0 ? -ret : 0;
 }
 
@@ -275,7 +276,7 @@ Sysdeps<Sigaction>::operator()(int signal, const struct sigaction *act, struct s
 	if (oldact) {
 		memset(oldact, 0, sizeof(*oldact));
 		oldact->sa_handler = previous.handler;
-		oldact->sa_flags = (int)(previous.flags & ~SA_RESTORER);
+		oldact->sa_flags = (int)previous.flags;
 		oldact->sa_restorer = previous.restorer;
 		memcpy(&oldact->sa_mask, &previous.mask, sizeof(previous.mask));
 	}
