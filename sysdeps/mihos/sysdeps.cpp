@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h> // PROT_*, MAP_*
+#include <sys/reboot.h>
 #include <termios.h>
 #include <time.h>
 
@@ -136,6 +137,70 @@ int Sysdeps<Dup2>::operator()(int fd, int flags, int newfd) {
 			return -ret;
 	}
 	return 0;
+}
+
+int Sysdeps<Fork>::operator()(pid_t *child) {
+	long ret = syscall(SYS_FORK);
+	if (ret < 0)
+		return -ret;
+	*child = ret;
+	return 0;
+}
+
+int Sysdeps<Execve>::operator()(const char *path, char *const argv[], char *const envp[]) {
+	long ret = syscall(SYS_EXEC, path, argv, envp);
+	return ret < 0 ? -ret : 0;
+}
+
+int
+Sysdeps<Waitpid>::operator()(pid_t pid, int *status, int flags, struct rusage *ru, pid_t *ret_pid) {
+	(void)ru;
+	long ret = syscall(SYS_WAIT, pid, status, flags);
+	if (ret < 0)
+		return -ret;
+	*ret_pid = ret;
+	return 0;
+}
+
+int Sysdeps<Ioctl>::operator()(int fd, unsigned long request, void *arg, int *result) {
+	long ret = syscall(SYS_IOCTL, fd, request, arg);
+	if (ret < 0)
+		return -ret;
+	*result = ret;
+	return 0;
+}
+
+int Sysdeps<SetSid>::operator()(pid_t *sid) {
+	long ret = syscall(SYS_SETSID);
+	if (ret < 0)
+		return -ret;
+	*sid = ret;
+	return 0;
+}
+
+int Sysdeps<OpenDir>::operator()(const char *path, int *handle) {
+	long ret = syscall(SYS_OPEN, path, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
+	if (ret < 0)
+		return -ret;
+	*handle = ret;
+	return 0;
+}
+
+int
+Sysdeps<ReadEntries>::operator()(int handle, void *buffer, size_t max_size, size_t *bytes_read) {
+	long ret = syscall(SYS_GETDENTS, handle, buffer, max_size);
+	if (ret < 0)
+		return -ret;
+	*bytes_read = ret;
+	return 0;
+}
+
+int Sysdeps<Reboot>::operator()(int cmd) {
+	// The kernel can only halt (no power off or restart yet)
+	if ((unsigned int)cmd != RB_HALT_SYSTEM)
+		return EINVAL;
+	long ret = syscall(SYS_REBOOT, REBOOT_HALT);
+	return ret < 0 ? -ret : 0;
 }
 
 } // namespace mlibc

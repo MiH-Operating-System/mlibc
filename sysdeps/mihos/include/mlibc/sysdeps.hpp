@@ -27,7 +27,16 @@ struct MihosSysdepTags :
 	TcbSet,
 	// Called unconditionally by options this port enables
 	Isatty, // stdio, for every stream (ansi)
-	Dup2    // openpty, login_tty (bsd)
+	Dup2,   // openpty, login_tty (bsd)
+	// D10 batch 1: init and the test runner
+	Fork,
+	Execve,
+	Waitpid,
+	Ioctl,
+	SetSid,
+	Reboot,
+	OpenDir,
+	ReadEntries
 {};
 
 template<typename Tag>
