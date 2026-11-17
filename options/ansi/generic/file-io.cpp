@@ -253,7 +253,8 @@ int abstract_file::unget(char c) {
 		return EOF;
 	else {
 		*(--__unget_ptr) = c;
-		return c;
+		// As unsigned char, like fgetc: a byte such as 0xFF must not come back as EOF
+		return static_cast<unsigned char>(c);
 	}
 }
 
@@ -886,7 +887,11 @@ int ungetc(int c, FILE *file_base) {
 
 	auto file = static_cast<mlibc::abstract_file *>(file_base);
 	frg::unique_lock lock(file->_lock);
-	return file->unget(c);
+	int ret = file->unget(c);
+	// C: a successful ungetc clears the end-of-file indicator
+	if (ret != EOF)
+		file_base->__status_bits &= ~__MLIBC_EOF_BIT;
+	return ret;
 }
 
 #if __MLIBC_GLIBC_OPTION

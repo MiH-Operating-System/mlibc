@@ -2502,6 +2502,7 @@ size_t fread_unlocked(void *buffer, size_t size, size_t count, FILE *file_base) 
 			if(int e = file->read((char *)buffer + progress,
 					count - progress, &chunk)) {
 				errno = e;
+				file->__status_bits |= __MLIBC_ERROR_BIT;
 				return 0;
 			}else if(!chunk) {
 				// TODO: Handle eof.
@@ -2520,6 +2521,7 @@ size_t fread_unlocked(void *buffer, size_t size, size_t count, FILE *file_base) 
 				if(int e = file->read((char *)buffer + i * size + progress,
 						size - progress, &chunk)) {
 					errno = e;
+					file->__status_bits |= __MLIBC_ERROR_BIT;
 					return 0;
 				}else if(!chunk) {
 					// TODO: Handle eof.
