@@ -1,6 +1,7 @@
 #ifndef MLIBC_FILE_IO_HPP
 #define MLIBC_FILE_IO_HPP
 
+#include <abi-bits/fcntl.h>
 #include <bits/mbstate.h>
 #include <stdio.h>
 
@@ -69,7 +70,7 @@ public:
 	int write(const char *buffer, size_t max_size, size_t *actual_size);
 	int unget(char c);
 
-	int update_bufmode(buffer_mode mode);
+	int update_bufmode(buffer_mode mode, size_t size = 0);
 
 	void purge();
 	int flush();
@@ -117,6 +118,21 @@ public:
 
 	stream_orientation _orientation = stream_orientation::none;
 	mbstate_t _mbstate = {};
+
+	// The directions the stream was opened for: reading or writing the other way fails at
+	// once with EBADF and the error indicator, never later at a flush. Both for streams
+	// opened without a mode (the standard ones); neither once fclose() closed the stream.
+	bool _can_read = true;
+	bool _can_write = true;
+	// O_APPEND: every write lands at the end, so ftell() writes pending output out first
+	bool _append = false;
+
+	// Sets _can_read, _can_write and _append from open() flags (parse_modestring's result)
+	void set_access(int flags) {
+		_can_read = !(flags & O_WRONLY);
+		_can_write = flags & (O_WRONLY | O_RDWR);
+		_append = flags & O_APPEND;
+	}
 };
 
 struct fd_file : abstract_file {

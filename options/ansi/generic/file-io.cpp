@@ -46,6 +46,9 @@ namespace {
 	// The maximum number of characters we permit the user to ungetc.
 	constexpr size_t ungetBufferSize = 8;
 
+	// A stream's own buffer, unless setvbuf() asks for another size.
+	constexpr size_t defaultBufferSize = 4096;
+
 	constinit mlibc::lazy_eternal<file_list> global_file_list_instance;
 
 	// List of files that will be flushed before exit().
@@ -72,7 +75,7 @@ abstract_file::abstract_file(void (*do_dispose)(abstract_file *))
 	// TODO: For __fwriting to work correctly, set the __io_mode to 1 if the write is write-only.
 	__buffer_ptr = nullptr;
 	__unget_ptr = nullptr;
-	__buffer_size = 4096;
+	__buffer_size = defaultBufferSize;
 	__offset = 0;
 	__io_offset = 0;
 	__valid_limit = 0;
@@ -106,6 +109,11 @@ void abstract_file::dispose() {
 
 int abstract_file::read(char *buffer, size_t max_size, size_t *actual_size) {
 	__ensure(max_size);
+
+	if (!_can_read) {
+		__status_bits |= __MLIBC_ERROR_BIT;
+		return EBADF;
+	}
 
 	if(int e = _init_bufmode(); e)
 		return e;
@@ -177,6 +185,12 @@ int abstract_file::read(char *buffer, size_t max_size, size_t *actual_size) {
 
 int abstract_file::write(const char *buffer, size_t max_size, size_t *actual_size) {
 	__ensure(max_size);
+
+	// Refused here, not at the flush: the bytes would otherwise wait in the buffer
+	if (!_can_write) {
+		__status_bits |= __MLIBC_ERROR_BIT;
+		return EBADF;
+	}
 
 	if(int e = _init_bufmode(); e)
 		return e;
@@ -258,10 +272,31 @@ int abstract_file::unget(char c) {
 	}
 }
 
-int abstract_file::update_bufmode(buffer_mode mode) {
-	// setvbuf() has undefined behavior if I/O has been performed.
-	__ensure(__dirty_begin == __dirty_end
-			&& "update_bufmode() must only be called before performing I/O");
+// size 0: the default size. C leaves setvbuf() after I/O undefined; rather than
+// panic, what waits is given back first (output written, read-ahead returned to
+// the fd), as glibc does.
+int abstract_file::update_bufmode(buffer_mode mode, size_t size) {
+	if (__dirty_begin != __dirty_end || __offset != __io_offset || __unget_ptr != __buffer_ptr) {
+		if (int e = flush(); e)
+			return e;
+	}
+
+	// A new size takes a new buffer, unless it still holds unread input (a pipe keeps it)
+	size_t new_size = size ? size : defaultBufferSize;
+	bool holds_input = __offset != __valid_limit || __unget_ptr != __buffer_ptr;
+	if (new_size != __buffer_size && !holds_input) {
+		if (__buffer_ptr)
+			getAllocator().free(__buffer_ptr - ungetBufferSize);
+		__buffer_ptr = nullptr;
+		__unget_ptr = nullptr;
+		__buffer_size = new_size;
+		__offset = 0;
+		__io_offset = 0;
+		__valid_limit = 0;
+		__dirty_begin = 0;
+		__dirty_end = 0;
+	}
+
 	_bufmode = mode;
 	return 0;
 }
@@ -279,6 +314,10 @@ int abstract_file::post_flush() {
 }
 
 int abstract_file::flush() {
+	// A standard stream fclose() closed: its fd is gone, nothing is left to write
+	if (!_can_read && !_can_write)
+		return 0;
+
 	if (__dirty_end != __dirty_begin) {
 		if (int e = _write_back(); e)
 			return e;
@@ -293,6 +332,13 @@ int abstract_file::flush() {
 }
 
 int abstract_file::tell(off_t *current_offset) {
+	// Append mode: pending output goes to the end, wherever the fd's offset is now,
+	// so the position is only known once it is written
+	if (_append && __dirty_begin != __dirty_end) {
+		if (int e = _write_back(); e)
+			return e;
+	}
+
 	off_t seek_offset;
 	if(int e = io_seek(0, SEEK_CUR, &seek_offset); e)
 		return e;
@@ -304,6 +350,9 @@ int abstract_file::tell(off_t *current_offset) {
 }
 
 int abstract_file::seek(off_t offset, int whence) {
+	if(whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END)
+		return EINVAL;
+
 	if(int e = _write_back(); e)
 		return e;
 
@@ -416,9 +465,15 @@ int abstract_file::_save_pos(bool &preserve_buffer) {
 	if (int e = _init_bufmode(); e)
 		return e;
 
-	if (_bufmode != buffer_mode::no_buffer && __offset != __io_offset) {
+	// Bytes pushed back by ungetc() move the position back too (they are dropped
+	// below), when they stand for bytes read from this buffer (none before its start)
+	size_t unget_length = __buffer_ptr - __unget_ptr;
+	if (unget_length > __offset)
+		unget_length = 0;
+
+	if ((_bufmode != buffer_mode::no_buffer && __offset != __io_offset) || unget_length) {
 		off_t new_offset;
-		auto seek_offset = (off_t(__offset) - off_t(__io_offset));
+		auto seek_offset = (off_t(__offset) - off_t(__io_offset)) - off_t(unget_length);
 		if (int e = io_seek(seek_offset, SEEK_CUR, &new_offset); e) {
 			if(e == ESPIPE) {
 				// See the corresponding resynchronization in _write_back().
@@ -478,13 +533,16 @@ int fd_file::fd() {
 }
 
 int fd_file::close() {
-	if(int e = mlibc::sysdep<Close>(_fd); e)
-		return e;
-	return 0;
+	int e = mlibc::sysdep<Close>(_fd);
+	// Gone either way (as Linux's close): later I/O must not reach a file that reuses the number
+	_fd = -1;
+	return e;
 }
 
 int fd_file::reopen(const char *path, const char *mode) {
 	int mode_flags = parse_modestring(mode);
+	if (mode_flags < 0)
+		return EINVAL;
 	const char *reopen_path = path;
 
 	if (!path) {
@@ -550,7 +608,7 @@ int fd_file::reopen(const char *path, const char *mode) {
 
 	__buffer_ptr = nullptr;
 	__unget_ptr = nullptr;
-	__buffer_size = 4096;
+	__buffer_size = defaultBufferSize;
 	purge();
 	__io_mode = 0;
 	__status_bits = 0;
@@ -558,10 +616,13 @@ int fd_file::reopen(const char *path, const char *mode) {
 	_orientation = stream_orientation::none;
 	_mbstate = {};
 
-	if (reopen_error)
+	if (reopen_error) {
+		_can_read = _can_write = false;
 		return reopen_error;
+	}
 
 	_fd = fd;
+	set_access(mode_flags);
 
 	if(mode_flags & O_APPEND) {
 		seek(0, SEEK_END);
@@ -631,6 +692,8 @@ int fd_file::io_seek(off_t offset, int whence, off_t *new_offset) {
 	return 0;
 }
 
+// The open() flags for an fopen() mode, or -1 (callers fail with EINVAL) if it does not
+// start with 'r', 'w' or 'a', as C and POSIX require.
 int fd_file::parse_modestring(const char *mode) {
 	// Consume the first char; this must be 'r', 'w' or 'a'.
 	int flags = 0;
@@ -656,7 +719,8 @@ int fd_file::parse_modestring(const char *mode) {
 		}
 		flags |= O_CREAT;
 	} else {
-		mlibc::infoLogger() << "Illegal fopen() mode '" << *mode << "'" << frg::endlog;
+		// Also "" (stepping past it would read beyond the string) and "+r"
+		return -1;
 	}
 	mode += 1;
 
@@ -734,6 +798,10 @@ int fileno(FILE *file_base) {
 
 FILE *fopen(const char *path, const char *mode) {
 	int flags = mlibc::fd_file::parse_modestring(mode);
+	if(flags < 0) {
+		errno = EINVAL;
+		return nullptr;
+	}
 
 	int fd;
 	if(int e = mlibc::sysdep<Open>(path, flags, 0666, &fd); e) {
@@ -741,8 +809,10 @@ FILE *fopen(const char *path, const char *mode) {
 		return nullptr;
 	}
 
-	return frg::construct<mlibc::fd_file>(getAllocator(), fd,
+	auto file = frg::construct<mlibc::fd_file>(getAllocator(), fd,
 			mlibc::file_dispose_cb<mlibc::fd_file>);
+	file->set_access(flags);
+	return file;
 }
 
 #if __MLIBC_LINUX_OPTION
@@ -762,6 +832,8 @@ int fclose(FILE *file_base) {
 		if(!error)
 			error = e;
 	}
+	// The standard streams outlive fclose (dispose() keeps them): later use fails at once
+	file->_can_read = file->_can_write = false;
 	file->dispose();
 	if(error)
 		errno = error;
@@ -847,29 +919,34 @@ int fflush(FILE *file_base) {
 	return 0;
 }
 
-int setvbuf(FILE *file_base, char *, int mode, size_t) {
-	// TODO: We could also honor the buffer, but for now use just set the mode.
+// The caller's array is not used, but its size is: the stream's own buffer gets that
+// many bytes (C lets setvbuf() choose: the array "may be used"). Without an array, the
+// default size.
+int setvbuf(FILE *file_base, char *buffer, int mode, size_t size) {
 	auto file = static_cast<mlibc::abstract_file *>(file_base);
+	mlibc::buffer_mode bufmode;
 	if(mode == _IONBF) {
-		if(int e = file->update_bufmode(mlibc::buffer_mode::no_buffer); e) {
-			errno = e;
-			return -1;
-		}
+		bufmode = mlibc::buffer_mode::no_buffer;
 	}else if(mode == _IOLBF) {
-		if(int e = file->update_bufmode(mlibc::buffer_mode::line_buffer); e) {
-			errno = e;
-			return -1;
-		}
+		bufmode = mlibc::buffer_mode::line_buffer;
 	}else if(mode == _IOFBF) {
-		if(int e = file->update_bufmode(mlibc::buffer_mode::full_buffer); e) {
-			errno = e;
-			return -1;
-		}
+		bufmode = mlibc::buffer_mode::full_buffer;
 	}else{
 		errno = EINVAL;
 		return -1;
 	}
 
+	// An array of no bytes cannot buffer anything
+	if(buffer && !size && mode != _IONBF) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	frg::unique_lock lock(file->_lock);
+	if(int e = file->update_bufmode(bufmode, buffer ? size : 0); e) {
+		errno = e;
+		return -1;
+	}
 	return 0;
 }
 

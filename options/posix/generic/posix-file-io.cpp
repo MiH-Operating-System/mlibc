@@ -246,6 +246,14 @@ int cookie_file::io_seek(off_t offset, int whence, off_t *new_offset) {
 
 FILE *fdopen(int fd, const char *mode) {
 	int flags = mlibc::fd_file::parse_modestring(mode);
+	if (flags < 0) {
+		errno = EINVAL;
+		return nullptr;
+	}
+
+	// The fd must be open (POSIX: EBADF otherwise); fcntl sets errno
+	if (fcntl(fd, F_GETFD) < 0)
+		return nullptr;
 
 	flags &= ~O_TRUNC; // 'w' should not truncate the file
 
@@ -271,6 +279,8 @@ FILE *fdopen(int fd, const char *mode) {
 
 	// TODO: We may need to activate line buffered mode for terminals.
 
-	return frg::construct<mlibc::fd_file>(getAllocator(), fd,
+	auto file = frg::construct<mlibc::fd_file>(getAllocator(), fd,
 			mlibc::file_dispose_cb<mlibc::fd_file>);
+	file->set_access(flags);
+	return file;
 }

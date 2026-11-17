@@ -34,6 +34,10 @@ private:
 
 FILE *fmemopen(void *buf, size_t size, const char *__restrict mode) {
 	int flags = mlibc::fd_file::parse_modestring(mode);
+	if (flags < 0) {
+		errno = EINVAL;
+		return nullptr;
+	}
 
 	return frg::construct<mlibc::fmemopen_mem_file>(getAllocator(), buf, size, flags,
 		mlibc::file_dispose_cb<mlibc::fmemopen_mem_file>);
@@ -223,6 +227,10 @@ char *tempnam(const char *, const char *) {
 
 FILE *fopencookie(void *cookie, const char *__restrict mode, cookie_io_functions_t funcs) {
 	int flags = mlibc::fd_file::parse_modestring(mode);
+	if (flags < 0) {
+		errno = EINVAL;
+		return nullptr;
+	}
 
 	return frg::construct<mlibc::cookie_file>(getAllocator(), cookie, flags, funcs,
 		mlibc::file_dispose_cb<mlibc::cookie_file>);
