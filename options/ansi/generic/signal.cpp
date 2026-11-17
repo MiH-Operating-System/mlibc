@@ -9,7 +9,8 @@
 __sighandler signal(int sn, __sighandler handler) {
 	struct sigaction sa;
 	sa.sa_handler = handler;
-	sa.sa_flags = 0;
+	// BSD semantics, as glibc: interrupted calls restart (POSIX leaves it open)
+	sa.sa_flags = SA_RESTART;
 	sigemptyset(&sa.sa_mask);
 	struct sigaction old;
 	if(int e = mlibc::sysdep_or_enosys<Sigaction>(sn, &sa, &old)){

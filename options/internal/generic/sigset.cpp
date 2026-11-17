@@ -1,3 +1,4 @@
+#include <abi-bits/signal.h>
 #include <bits/sigset_t.h>
 #include <bits/ensure.h>
 #include <errno.h>
@@ -41,6 +42,15 @@ size_t signo_to_bit(int signo) {
 	return signo % (sizeof(sigset_underlying_type) * CHAR_BIT);
 }
 
+// A signal number the ABI has, 1 to NSIG - 1 (as glibc); without NSIG, any the set can hold
+bool signo_invalid(int signo) {
+#ifdef NSIG
+	if(signo + 1 >= NSIG)
+		return true;
+#endif
+	return signo < 0 || static_cast<unsigned int>(signo) >= (sizeof(sigset_t) * CHAR_BIT);
+}
+
 } // namespace
 
 int sigemptyset(sigset_t *sigset) {
@@ -55,7 +65,7 @@ int sigfillset(sigset_t *sigset) {
 
 int sigaddset(sigset_t *sigset, int sig) {
 	int signo = sig - 1;
-	if(signo < 0 || static_cast<unsigned int>(signo) >= (sizeof(sigset_t) * CHAR_BIT)) {
+	if(signo_invalid(signo)) {
 		errno = EINVAL;
 		return -1;
 	}
@@ -68,7 +78,7 @@ int sigaddset(sigset_t *sigset, int sig) {
 
 int sigdelset(sigset_t *sigset, int sig) {
 	int signo = sig - 1;
-	if(signo < 0 || static_cast<unsigned int>(signo) >= (sizeof(sigset_t) * CHAR_BIT)) {
+	if(signo_invalid(signo)) {
 		errno = EINVAL;
 		return -1;
 	}
@@ -81,7 +91,7 @@ int sigdelset(sigset_t *sigset, int sig) {
 
 int sigismember(const sigset_t *sigset, int sig) {
 	int signo = sig - 1;
-	if(signo < 0 || static_cast<unsigned int>(signo) >= (sizeof(sigset_t) * CHAR_BIT)) {
+	if(signo_invalid(signo)) {
 		errno = EINVAL;
 		return -1;
 	}
