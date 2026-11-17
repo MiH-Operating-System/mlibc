@@ -6,6 +6,7 @@
 #include <frg/manual_box.hpp>
 #include <frg/slab.hpp>
 #include <internal-config.h>
+#include <stdint.h>
 
 #ifdef MLIBC_BUILDING_RTLD
 
@@ -46,12 +47,26 @@ using MemoryPool = frg::sharded_slab::pool<ShardedSlabPolicy>;
 
 MemoryPool &getMemoryPool();
 
+// No object is bigger than PTRDIFF_MAX (glibc refuses those too). Below it,
+// frigg's size arithmetic (header, alignment, page rounding) cannot wrap.
 struct MemoryAllocator {
-	void *allocate(size_t size) { return getMemoryPool().allocate(size); }
-	void *allocate(size_t size, size_t alignment) { return getMemoryPool().allocate(size, alignment); }
+	void *allocate(size_t size) {
+		if (size > PTRDIFF_MAX)
+			return nullptr;
+		return getMemoryPool().allocate(size);
+	}
+	void *allocate(size_t size, size_t alignment) {
+		if (size > PTRDIFF_MAX)
+			return nullptr;
+		return getMemoryPool().allocate(size, alignment);
+	}
 	void free(void *ptr) { getMemoryPool().deallocate(ptr); }
 	void deallocate(void *ptr, size_t) { getMemoryPool().deallocate(ptr); }
-	void *reallocate(void *ptr, size_t size) { return getMemoryPool().reallocate(ptr, size); }
+	void *reallocate(void *ptr, size_t size) {
+		if (size > PTRDIFF_MAX)
+			return nullptr; // the old block stays, as a failed realloc must leave it
+		return getMemoryPool().reallocate(ptr, size);
+	}
 	size_t get_size(void *ptr) { return getMemoryPool().get_size(ptr); }
 };
 

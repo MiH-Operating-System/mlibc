@@ -47,7 +47,9 @@ LdsoAllocator &getLdsoAllocator() {
 
 void *ShardedSlabBasePolicy::map(size_t size) {
 	void *ptr;
-	__ensure(!mlibc::sysdep<AnonAllocate>(size, &ptr));
+	// frigg turns nullptr into allocation_failed, so malloc returns NULL
+	if (mlibc::sysdep<AnonAllocate>(size, &ptr))
+		return nullptr;
 	return ptr;
 }
 
