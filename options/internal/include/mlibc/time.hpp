@@ -35,6 +35,8 @@ struct StrftimePolicy<char> {
 	static constexpr const char *UFormat = "%02d";
 	static constexpr const char *rFormat = "%.2i:%.2i:%.2i %s";
 	static constexpr const char *zFormat = "%c%04d";
+	static constexpr const char *LLD = "%lld";
+	static constexpr const char *Unknown = "?";
 
 	static const char *tFmt(localeinfo *l) { return mlibc::nl_langinfo_l(T_FMT, l); }
 	static const char *eraTFmt(localeinfo *l) { return mlibc::nl_langinfo_l(ERA_T_FMT, l); }
@@ -66,6 +68,8 @@ struct StrftimePolicy<wchar_t> {
 	static constexpr const wchar_t *UFormat = L"%02d";
 	static constexpr const wchar_t *rFormat = L"%.2i:%.2i:%.2i %ls";
 	static constexpr const wchar_t *zFormat = L"%c%04d";
+	static constexpr const wchar_t *LLD = L"%lld";
+	static constexpr const wchar_t *Unknown = L"?";
 
 	static const wchar_t *tFmt(localeinfo *l) {
 		return l->time.get(_NL_WT_FMT).asWideString().data();
@@ -167,6 +171,17 @@ size_t strftime(
 		return val;
 	};
 
+	// The year the ISO week belongs to (%G): the year of its Thursday
+	auto iso_year = [&](const struct tm *tm) noexcept {
+		long long year = 1900LL + tm->tm_year;
+		int week = week_num(tm);
+		if (week >= 52 && tm->tm_yday < 7)
+			year--; // early January, in the last week of the year before
+		else if (week == 1 && tm->tm_yday > 300)
+			year++; // late December, in the first week of the next year
+		return year;
+	};
+
 	auto c = format;
 	auto p = dest;
 
@@ -216,6 +231,8 @@ size_t strftime(
 				use_alternative_symbols = true;
 				c++;
 			} else {
+				if (space < 2)
+					return 0;
 				*p = '%';
 				p++;
 				c++;
@@ -230,6 +247,8 @@ size_t strftime(
 				use_alternative_era_format = true;
 				c++;
 			} else {
+				if (space < 2)
+					return 0;
 				*p = '%';
 				p++;
 				c++;
@@ -415,8 +434,15 @@ size_t strftime(
 			}
 			case 'a': {
 				int day = tm->tm_wday;
-				if (day < 0 || day > 6)
-					__ensure(!"Day not in bounds.");
+				if (day < 0 || day > 6) {
+					// Out of range: "?", as glibc and musl
+					chunk = nprintf(p, space, P::Unknown);
+					if (chunk >= space)
+						return 0;
+					p += chunk;
+					c++;
+					break;
+				}
 
 				auto str = [&] {
 					if constexpr (std::is_same_v<Char, char>)
@@ -436,8 +462,14 @@ size_t strftime(
 			case 'B':
 			case 'h': {
 				int mon = tm->tm_mon;
-				if (mon < 0 || mon > 11)
-					__ensure(!"Month not in bounds.");
+				if (mon < 0 || mon > 11) {
+					chunk = nprintf(p, space, P::Unknown);
+					if (chunk >= space)
+						return 0;
+					p += chunk;
+					c++;
+					break;
+				}
 
 				nl_item item = [&]() {
 					if constexpr (std::is_same_v<Char, char>) {
@@ -615,6 +647,14 @@ size_t strftime(
 				break;
 			}
 			case 'A': {
+				if (tm->tm_wday < 0 || tm->tm_wday > 6) {
+					chunk = nprintf(p, space, P::Unknown);
+					if (chunk >= space)
+						return 0;
+					p += chunk;
+					c++;
+					break;
+				}
 				auto str = [&] {
 					if constexpr (std::is_same_v<Char, char>)
 						return l->time.get(DAY_1 + tm->tm_wday).asString();
@@ -727,7 +767,7 @@ size_t strftime(
 				break;
 			}
 			case 'W': {
-				print_digits.template operator()<int, 53>((tm->tm_yday + 7 - (tm->tm_wday + 6) % 7) / 7, P::D);
+				print_digits.template operator()<int, 53>((tm->tm_yday + 7 - (tm->tm_wday + 6) % 7) / 7, P::UFormat);
 				if (chunk >= space)
 					return 0;
 				p += chunk;
@@ -735,7 +775,7 @@ size_t strftime(
 				break;
 			}
 			case 'V': {
-				print_digits.template operator()<int, 53>(week_num(tm), P::D);
+				print_digits.template operator()<int, 53>(week_num(tm), P::UFormat);
 				if (chunk >= space)
 					return 0;
 				p += chunk;
@@ -749,8 +789,44 @@ size_t strftime(
 				p += chunk;
 				break;
 			}
-			default:
-				mlibc::panicLogger() << "mlibc: strftime unknown format type: " << c << frg::endlog;
+			case 's': {
+				// Seconds since the epoch, as mktime() reads the fields (POSIX)
+				struct tm copy = *tm;
+				chunk = nprintf(p, space, P::LLD, static_cast<long long>(mktime(&copy)));
+				if (chunk >= space)
+					return 0;
+				p += chunk;
+				c++;
+				break;
+			}
+			case 'G': {
+				chunk = nprintf(p, space, P::LLD, iso_year(tm));
+				if (chunk >= space)
+					return 0;
+				p += chunk;
+				c++;
+				break;
+			}
+			case 'g': {
+				print_digits.template operator()<int, 99>(
+				    static_cast<int>(pos_mod(iso_year(tm), 100LL)), P::Dot2D
+				);
+				if (chunk >= space)
+					return 0;
+				p += chunk;
+				c++;
+				break;
+			}
+			default: {
+				// Unknown: kept as written, as glibc and musl (C leaves it undefined)
+				if (space < 2)
+					return 0;
+				p[0] = '%';
+				p[1] = *c;
+				p += 2;
+				c++;
+				break;
+			}
 		}
 	}
 

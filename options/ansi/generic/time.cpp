@@ -682,12 +682,13 @@ time_t time(time_t *out) {
 
 namespace {
 
-void civil_from_days(time_t days_since_epoch, int *year, unsigned int *month, unsigned int *day) {
+// The year is a time_t: any time_t's days fit, also those whose year is past an int
+void civil_from_days(time_t days_since_epoch, time_t *year, unsigned int *month, unsigned int *day) {
 	time_t time = days_since_epoch + 719468;
-	int era = (time >= 0 ? time : time - 146096) / 146097;
+	time_t era = (time >= 0 ? time : time - 146096) / 146097;
 	unsigned int doe = static_cast<unsigned int>(time - era * 146097);
 	unsigned int yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
-	int y = static_cast<int>(yoe) + era * 400;
+	time_t y = static_cast<time_t>(yoe) + era * 400;
 	unsigned int doy = doe - (365*yoe + yoe/4 - yoe/100);
 	unsigned int mp = (5*doy + 2)/153;
 	unsigned int d = doy - (153*mp+2)/5 + 1;
@@ -773,7 +774,7 @@ bool is_in_dst(time_t unix_gmt) {
 	if (rules[0].type == TZFILE)
 	    __ensure(!"is_in_dst() called with invalid rules");
 
-	int year;
+	time_t year;
 	unsigned int _month;
 	unsigned int _day;
 	civil_from_days(unix_gmt / (60 * 60 * 24), &year, &_month, &_day);
@@ -907,15 +908,11 @@ int unix_local_from_gmt(time_t unix_gmt, time_t *offset, bool *dst, char **tm_zo
 
 } //anonymous namespace
 
-struct tm *gmtime_r(const time_t *unix_gmt, struct tm *res) {
-	int year;
-	unsigned int month;
-	unsigned int day;
-	unsigned int weekday;
-	unsigned int yday;
+namespace {
 
-	time_t unix_local = *unix_gmt;
-
+// Fills res's date and time fields from seconds; the zone fields are the caller's.
+// False (and errno EOVERFLOW, res untouched) if the year does not fit tm_year.
+bool tm_from_seconds(time_t unix_local, struct tm *res) {
 	// Division truncates towards zero and the remainder keeps the sign of the
 	// dividend, so a time before the epoch has to be carried into the previous
 	// day to leave a non-negative time of day.
@@ -926,7 +923,16 @@ struct tm *gmtime_r(const time_t *unix_gmt, struct tm *res) {
 		days_since_epoch--;
 	}
 
+	time_t year;
+	unsigned int month;
+	unsigned int day;
+	unsigned int weekday;
+	unsigned int yday;
 	civil_from_days(days_since_epoch, &year, &month, &day);
+	if(year - 1900 > INT_MAX || year - 1900 < INT_MIN) {
+		errno = EOVERFLOW;
+		return false;
+	}
 	weekday_from_days(days_since_epoch, &weekday);
 	yearday_from_date(year, month, day, &yday);
 
@@ -938,20 +944,22 @@ struct tm *gmtime_r(const time_t *unix_gmt, struct tm *res) {
 	res->tm_year = year - 1900;
 	res->tm_wday = weekday;
 	res->tm_yday = yday - 1;
-	res->tm_isdst = -1;
+	return true;
+}
+
+} // namespace
+
+struct tm *gmtime_r(const time_t *unix_gmt, struct tm *res) {
+	if(!tm_from_seconds(*unix_gmt, res))
+		return nullptr;
+
+	res->tm_isdst = 0; // UTC has no daylight saving time
 	res->tm_zone = __utc;
 	res->tm_gmtoff = 0;
-
 	return res;
 }
 
 struct tm *localtime_r(const time_t *unix_gmt, struct tm *res) {
-	int year;
-	unsigned int month;
-	unsigned int day;
-	unsigned int weekday;
-	unsigned int yday;
-
 	time_t offset = 0;
 	bool dst;
 	char *tm_zone;
@@ -962,27 +970,9 @@ struct tm *localtime_r(const time_t *unix_gmt, struct tm *res) {
 		__builtin_unreachable();
 	}
 	time_t unix_local = *unix_gmt + offset;
+	if(!tm_from_seconds(unix_local, res))
+		return nullptr;
 
-	// See the comment in gmtime_r().
-	time_t days_since_epoch = unix_local / (60*60*24);
-	time_t secs_of_day = unix_local % (60*60*24);
-	if(secs_of_day < 0) {
-		secs_of_day += 60*60*24;
-		days_since_epoch--;
-	}
-
-	civil_from_days(days_since_epoch, &year, &month, &day);
-	weekday_from_days(days_since_epoch, &weekday);
-	yearday_from_date(year, month, day, &yday);
-
-	res->tm_sec = secs_of_day % 60;
-	res->tm_min = (secs_of_day / 60) % 60;
-	res->tm_hour = secs_of_day / (60*60);
-	res->tm_mday = day;
-	res->tm_mon = month - 1;
-	res->tm_year = year - 1900;
-	res->tm_wday = weekday;
-	res->tm_yday = yday - 1;
 	res->tm_isdst = dst;
 	res->tm_zone = tm_zone;
 	res->tm_gmtoff = offset;
@@ -1017,19 +1007,38 @@ time_t timelocal(struct tm *) {
 	__builtin_unreachable();
 }
 
-constexpr static int days_from_civil(int y, unsigned m, unsigned d) noexcept {
+// Days since the epoch of the first day of month m (1..12) of year y
+constexpr static time_t days_from_civil(time_t y, unsigned m) noexcept {
 	y -= m <= 2;
-	const int era = (y >= 0 ? y : y - 399) / 400;
+	const time_t era = (y >= 0 ? y : y - 399) / 400;
 	const unsigned yoe = static_cast<unsigned>(y - era * 400); // [0, 399]
-	const unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1; // [0, 365]
+	const unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5; // [0, 365]
 	const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-	return era * 146097 + static_cast<int>(doe) - 719468;
+	return era * 146097 + static_cast<time_t>(doe) - 719468;
 }
 
+// Out-of-range fields carry over (month 12 is January of the next year, day 0 the
+// last of the month before, second -1 the minute before), and tm comes back
+// normalized, with its weekday and year day (C). In time_t, so no int field can
+// overflow the sum; a year past tm_year is -1 with EOVERFLOW.
 time_t timegm(struct tm *tm) {
-	time_t year = tm->tm_year + 1900;
-	time_t month = tm->tm_mon + 1;
-	time_t days = days_from_civil(year, month, tm->tm_mday);
-	time_t secs = (days * 86400) + (tm->tm_hour * 60 * 60) + (tm->tm_min * 60) + tm->tm_sec;
+	time_t month = tm->tm_mon;
+	time_t year = tm->tm_year + time_t{1900} + month / 12;
+	month %= 12;
+	if(month < 0) {
+		month += 12;
+		year--;
+	}
+
+	time_t days = days_from_civil(year, static_cast<unsigned>(month) + 1) + (tm->tm_mday - time_t{1});
+	time_t secs = days * 86400 + tm->tm_hour * time_t{3600} + tm->tm_min * time_t{60} + tm->tm_sec;
+
+	struct tm normalized;
+	if(!tm_from_seconds(secs, &normalized))
+		return -1; // errno is EOVERFLOW
+	normalized.tm_isdst = 0;
+	normalized.tm_zone = __utc;
+	normalized.tm_gmtoff = 0;
+	*tm = normalized;
 	return secs;
 }

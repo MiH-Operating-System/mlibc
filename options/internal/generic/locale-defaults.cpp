@@ -170,7 +170,8 @@ nl_time::nl_time() {
 	set(ERA_D_T_FMT, {""});
 	set(ERA_T_FMT, {""});
 	set(_NL_TIME_ERA_NUM_ENTRIES, 0);
-	set(_NL_TIME_ERA_ENTRIES, {""});
+	// No eras: an empty byte span, the type era_view reads (a string here made %E panic)
+	set(_NL_TIME_ERA_ENTRIES, frg::span<const uint8_t>{});
 	set(_NL_WABDAY_1, {L"Sun"});
 	set(_NL_WABDAY_2, {L"Mon"});
 	set(_NL_WABDAY_3, {L"Tue"});
