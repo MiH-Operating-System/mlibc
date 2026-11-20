@@ -71,7 +71,9 @@ struct MihosSysdepTags :
     GetUid,
     GetEuid,
     GetGid,
-    GetEgid {};
+    GetEgid,
+    // D10g batch 3: busybox mv, Lua's os.rename
+    Rename {};
 
 template <typename Tag>
 using Sysdeps = SysdepOf<MihosSysdepTags, Tag>;

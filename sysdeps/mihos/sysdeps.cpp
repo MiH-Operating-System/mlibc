@@ -478,6 +478,11 @@ int Sysdeps<Rmdir>::operator()(const char *path) {
 	return ret < 0 ? -ret : 0;
 }
 
+int Sysdeps<Rename>::operator()(const char *path, const char *new_path) {
+	long ret = syscall(SYS_RENAME, path, new_path);
+	return ret < 0 ? -ret : 0;
+}
+
 int Sysdeps<Truncate>::operator()(const char *path, off_t length) {
 	long ret = syscall(SYS_TRUNCATE, path, length);
 	return ret < 0 ? -ret : 0;
