@@ -173,9 +173,11 @@ int unsetenv(const char *name) {
 }
 
 int clearenv(void) {
-	auto vector = get_vector();
-	vector.clear();
-	update_vector();
+	// environ is what getenv() reads, so it must be emptied too. An empty
+	// list rather than NULL (as glibc and musl do): the lookups here index
+	// environ without checking it.
+	get_vector().clear();
+	environ = empty_environment;
 	return 0;
 }
 
