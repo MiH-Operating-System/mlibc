@@ -347,17 +347,11 @@ int Sysdeps<Pipe>::operator()(int *fds, int flags) {
 }
 
 int Sysdeps<Dup>::operator()(int fd, int flags, int *newfd) {
-	long ret = syscall(SYS_DUP, fd);
+	long ret =
+	    (flags & O_CLOEXEC) ? syscall(SYS_FCNTL, fd, F_DUPFD_CLOEXEC, 0) : syscall(SYS_DUP, fd);
 	if (ret < 0)
 		return -ret;
 	*newfd = ret;
-	if (flags & O_CLOEXEC) {
-		ret = syscall(SYS_FCNTL, *newfd, F_SETFD, FD_CLOEXEC);
-		if (ret < 0) {
-			syscall(SYS_CLOSE, *newfd);
-			return -ret;
-		}
-	}
 	return 0;
 }
 
@@ -365,12 +359,16 @@ int Sysdeps<Fcntl>::operator()(int fd, int request, va_list args, int *result) {
 	long arg = 0;
 	switch (request) {
 		case F_GETFD:
+		case F_GETFL:
 			break;
 		case F_SETFD:
+		case F_SETFL:
+		case F_DUPFD:
+		case F_DUPFD_CLOEXEC:
 			arg = va_arg(args, int);
 			break;
 		default:
-			return EINVAL; // the kernel knows only F_GETFD and F_SETFD
+			return EINVAL; // the kernel knows only these six
 	}
 	long ret = syscall(SYS_FCNTL, fd, request, arg);
 	if (ret < 0)
