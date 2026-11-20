@@ -66,7 +66,12 @@ struct MihosSysdepTags :
     Ftruncate,
     VmProtect,
     Brk,
-    Sleep {};
+    Sleep,
+    // D10g batch 1: busybox (ash calls geteuid at startup)
+    GetUid,
+    GetEuid,
+    GetGid,
+    GetEgid {};
 
 template <typename Tag>
 using Sysdeps = SysdepOf<MihosSysdepTags, Tag>;

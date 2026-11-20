@@ -424,6 +424,14 @@ pid_t Sysdeps<GetPid>::operator()() { return syscall(SYS_GETPID); }
 
 pid_t Sysdeps<GetPpid>::operator()() { return syscall(SYS_GETPPID); }
 
+uid_t Sysdeps<GetUid>::operator()() { return syscall(SYS_GETUID); }
+
+uid_t Sysdeps<GetEuid>::operator()() { return syscall(SYS_GETEUID); }
+
+gid_t Sysdeps<GetGid>::operator()() { return syscall(SYS_GETGID); }
+
+gid_t Sysdeps<GetEgid>::operator()() { return syscall(SYS_GETEGID); }
+
 // The kernel's struct mihos_stat is the start of mlibc's x86-64 struct stat
 // (which adds __unused[3]); checked here so a change on either side fails the build
 static_assert(offsetof(struct stat, st_ctim) == 104);
