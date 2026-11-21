@@ -75,7 +75,9 @@ struct MihosSysdepTags :
     // D10g batch 3: busybox mv, Lua's os.rename
     Rename,
     // D10g batch 4: busybox touch (utime, utimes, futimes and futimens come here too)
-    Utimensat {};
+    Utimensat,
+    // D10g batch 5: symlinks (readlink, realpath, ls -l)
+    Readlink {};
 
 template <typename Tag>
 using Sysdeps = SysdepOf<MihosSysdepTags, Tag>;

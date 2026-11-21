@@ -437,14 +437,15 @@ static_assert(offsetof(struct stat, st_ctim) == 104);
 int Sysdeps<Stat>::operator()(
     fsfd_target fsfdt, int fd, const char *path, int flags, struct stat *statbuf
 ) {
-	// No symlinks in the VFS: AT_SYMLINK_NOFOLLOW (lstat) changes nothing
 	bool by_fd = fsfdt == fsfd_target::fd
 	             || (fsfdt == fsfd_target::fd_path && (flags & AT_EMPTY_PATH) && !path[0]);
 	if (fsfdt == fsfd_target::fd_path && !by_fd && fd != AT_FDCWD && path[0] != '/')
 		return ENOSYS; // relative to another directory: the kernel has no *at calls yet
 
 	memset(statbuf, 0, sizeof(*statbuf));
-	long ret = by_fd ? syscall(SYS_FSTAT, fd, statbuf) : syscall(SYS_STAT, path, statbuf);
+	// lstat (and fstatat with AT_SYMLINK_NOFOLLOW): the link itself
+	long ret = by_fd ? syscall(SYS_FSTAT, fd, statbuf)
+	                 : syscall(flags & AT_SYMLINK_NOFOLLOW ? SYS_LSTAT : SYS_STAT, path, statbuf);
 	return ret < 0 ? -ret : 0;
 }
 
@@ -488,6 +489,15 @@ int Sysdeps<Utimensat>::operator()(
 ) {
 	long ret = syscall(SYS_UTIMENSAT, dirfd, pathname, times, flags);
 	return ret < 0 ? -ret : 0;
+}
+
+int
+Sysdeps<Readlink>::operator()(const char *path, void *buffer, size_t max_size, ssize_t *length) {
+	long ret = syscall(SYS_READLINK, path, buffer, max_size);
+	if (ret < 0)
+		return -ret;
+	*length = ret;
+	return 0;
 }
 
 int Sysdeps<Truncate>::operator()(const char *path, off_t length) {
