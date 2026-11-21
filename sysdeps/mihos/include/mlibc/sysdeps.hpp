@@ -73,7 +73,9 @@ struct MihosSysdepTags :
     GetGid,
     GetEgid,
     // D10g batch 3: busybox mv, Lua's os.rename
-    Rename {};
+    Rename,
+    // D10g batch 4: busybox touch (utime, utimes, futimes and futimens come here too)
+    Utimensat {};
 
 template <typename Tag>
 using Sysdeps = SysdepOf<MihosSysdepTags, Tag>;

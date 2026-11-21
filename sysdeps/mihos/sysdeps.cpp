@@ -483,6 +483,13 @@ int Sysdeps<Rename>::operator()(const char *path, const char *new_path) {
 	return ret < 0 ? -ret : 0;
 }
 
+int Sysdeps<Utimensat>::operator()(
+    int dirfd, const char *pathname, const struct timespec times[2], int flags
+) {
+	long ret = syscall(SYS_UTIMENSAT, dirfd, pathname, times, flags);
+	return ret < 0 ? -ret : 0;
+}
+
 int Sysdeps<Truncate>::operator()(const char *path, off_t length) {
 	long ret = syscall(SYS_TRUNCATE, path, length);
 	return ret < 0 ? -ret : 0;
