@@ -500,6 +500,11 @@ Sysdeps<Readlink>::operator()(const char *path, void *buffer, size_t max_size, s
 	return 0;
 }
 
+int Sysdeps<Symlink>::operator()(const char *target_path, const char *link_path) {
+	long ret = syscall(SYS_SYMLINK, target_path, link_path);
+	return ret < 0 ? -ret : 0;
+}
+
 int Sysdeps<Truncate>::operator()(const char *path, off_t length) {
 	long ret = syscall(SYS_TRUNCATE, path, length);
 	return ret < 0 ? -ret : 0;

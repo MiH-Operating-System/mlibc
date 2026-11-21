@@ -77,7 +77,9 @@ struct MihosSysdepTags :
     // D10g batch 4: busybox touch (utime, utimes, futimes and futimens come here too)
     Utimensat,
     // D10g batch 5: symlinks (readlink, realpath, ls -l)
-    Readlink {};
+    Readlink,
+    // D10g batch 6: making symlinks (symlink, busybox ln -s)
+    Symlink {};
 
 template <typename Tag>
 using Sysdeps = SysdepOf<MihosSysdepTags, Tag>;
