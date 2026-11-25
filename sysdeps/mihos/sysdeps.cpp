@@ -505,6 +505,33 @@ int Sysdeps<Symlink>::operator()(const char *target_path, const char *link_path)
 	return ret < 0 ? -ret : 0;
 }
 
+int Sysdeps<Chmod>::operator()(const char *pathname, mode_t mode) {
+	long ret = syscall(SYS_FCHMODAT, AT_FDCWD, pathname, mode, 0);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Fchmod>::operator()(int fd, mode_t mode) {
+	long ret = syscall(SYS_FCHMODAT, fd, "", mode, AT_EMPTY_PATH);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Fchmodat>::operator()(int fd, const char *pathname, mode_t mode, int flags) {
+	long ret = syscall(SYS_FCHMODAT, fd, pathname, mode, flags);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Fchownat>::operator()(
+    int dirfd, const char *pathname, uid_t owner, gid_t group, int flags
+) {
+	long ret = syscall(SYS_FCHOWNAT, dirfd, pathname, owner, group, flags);
+	return ret < 0 ? -ret : 0;
+}
+
+int Sysdeps<Umask>::operator()(mode_t mode, mode_t *old) {
+	*old = syscall(SYS_UMASK, mode);
+	return 0;
+}
+
 int Sysdeps<Truncate>::operator()(const char *path, off_t length) {
 	long ret = syscall(SYS_TRUNCATE, path, length);
 	return ret < 0 ? -ret : 0;

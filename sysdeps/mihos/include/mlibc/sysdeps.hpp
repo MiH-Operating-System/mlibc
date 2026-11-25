@@ -79,7 +79,13 @@ struct MihosSysdepTags :
     // D10g batch 5: symlinks (readlink, realpath, ls -l)
     Readlink,
     // D10g batch 6: making symlinks (symlink, busybox ln -s)
-    Symlink {};
+    Symlink,
+    // D10g batch 8: cp -p, chmod, umask
+    Chmod,
+    Fchmod,
+    Fchmodat,
+    Fchownat,
+    Umask {};
 
 template <typename Tag>
 using Sysdeps = SysdepOf<MihosSysdepTags, Tag>;
