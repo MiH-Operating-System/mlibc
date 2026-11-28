@@ -85,7 +85,14 @@ struct MihosSysdepTags :
     Fchmod,
     Fchmodat,
     Fchownat,
-    Umask {};
+    Umask,
+    //
+    PrepareStack,
+    Clone,
+    ThreadExit,
+    FutexTid,
+    Tgkill,
+    Yield {};
 
 template <typename Tag>
 using Sysdeps = SysdepOf<MihosSysdepTags, Tag>;

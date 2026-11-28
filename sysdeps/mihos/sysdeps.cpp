@@ -5,6 +5,9 @@
 #include <limits.h> // INT_MAX
 #include <mihos/syscall.h>
 #include <mlibc/all-sysdeps.hpp>
+#include <mlibc/arch-defs.hpp> // mlibc::page_size
+#include <mlibc/tcb.hpp>       // Tcb, for a new thread's entry
+#include <mlibc/threads.hpp>   // mlibc::thread_exit
 #include <signal.h>
 #include <stdint.h>
 #include <string.h>
@@ -30,6 +33,26 @@ asm(".pushsection .text\n"
 	".popsection\n");
 extern "C" void __mihos_signal_restore(void);
 // clang-format on
+
+// A new thread's first C++ code, called by __mlibc_start_thread (thread.S). Its thread
+// pointer is 0 until TcbSet: nothing here may touch TLS (errno included) before that
+extern "C" void __mlibc_enter_thread(void *entry, void *argument, Tcb *tcb) {
+	if (mlibc::sysdep<TcbSet>(tcb))
+		__ensure(!"__mlibc_enter_thread: cannot set the thread pointer");
+
+	// The creator stores our tid once SYS_THREAD_CREATE returns, and we may run first:
+	// mutexes and pthread_kill read it, so wait for it
+	while (__atomic_load_n(&tcb->tid, __ATOMIC_RELAXED) == 0)
+		mlibc::sysdep<FutexWait>(&tcb->tid, 0, nullptr);
+
+	// pthread_cancel may act on this thread from now on
+	__atomic_fetch_or(&tcb->cancelBits, tcbCancelEnableBit, __ATOMIC_RELAXED);
+
+	tcb->invokeThreadFunc(entry, argument);
+	mlibc::thread_exit(tcb->returnValue);
+}
+
+extern "C" void __mlibc_start_thread(); // thread.S
 
 namespace mlibc {
 
@@ -99,6 +122,86 @@ int Sysdeps<FutexWake>::operator()(int *pointer, bool all) {
 	long ret = syscall(SYS_FUTEX_WAKE, pointer, all ? INT_MAX : 1);
 	return ret < 0 ? -ret : 0;
 }
+
+// ---- Threads ----
+
+#define THREAD_STACK_DEFAULT 0x200000 // 2 MiB, as zinnia and glibc
+
+int Sysdeps<PrepareStack>::operator()(
+    void **stack,
+    void *entry,
+    void *argument,
+    void *tcb,
+    size_t *stack_size,
+    size_t *guard_size,
+    void **stack_base
+) {
+	if (*stack_size == 0)
+		*stack_size = THREAD_STACK_DEFAULT;
+
+	if (*stack == nullptr) {
+		// The guard page sits below the stack: stacks grow down, so an overflow faults there
+		*guard_size = page_size;
+		void *mapping;
+		if (int e = sysdep<VmMap>(
+		        nullptr,
+		        *guard_size + *stack_size,
+		        PROT_READ | PROT_WRITE,
+		        MAP_PRIVATE | MAP_ANONYMOUS,
+		        -1,
+		        0,
+		        &mapping
+		    ))
+			return e;
+		if (int e = sysdep<VmProtect>(mapping, *guard_size, PROT_NONE)) {
+			sysdep<VmUnmap>(mapping, *guard_size + *stack_size);
+			return e;
+		}
+		*stack_base = (char *)mapping + *guard_size;
+	} else {
+		// pthread_attr_setstack: the program's memory, its lowest byte, no guard of ours
+		*guard_size = 0;
+		*stack_base = *stack;
+	}
+
+	// The top, 16-aligned; the three words thread.S pops become __mlibc_enter_thread's
+	// arguments, in this order
+	auto top = ((uintptr_t)*stack_base + *stack_size) & ~(uintptr_t)15;
+	void **words = (void **)top;
+	*--words = tcb;
+	*--words = argument;
+	*--words = entry;
+
+	*stack = words;
+	return 0;
+}
+
+int Sysdeps<Clone>::operator()(void *tcb, pid_t *tid, void *stack) {
+	(void)tcb; // the new thread gets it from its stack (PrepareStack)
+	long ret = syscall(SYS_THREAD_CREATE, __mlibc_start_thread, stack);
+	if (ret < 0)
+		return -ret;
+	*tid = ret;
+	return 0;
+}
+
+void Sysdeps<ThreadExit>::operator()() {
+	syscall(SYS_THREAD_EXIT);
+	__builtin_unreachable();
+}
+
+pid_t Sysdeps<FutexTid>::operator()() { return syscall(SYS_GETTID); }
+
+int Sysdeps<Tgkill>::operator()(int tgid, int tid, int signal) {
+	// Our kernel reaches only the caller's own threads: another process's is "no such
+	// thread", as Linux answers for a tid outside tgid
+	if (tgid != sysdep<GetPid>())
+		return ESRCH;
+	long ret = syscall(SYS_THREAD_KILL, tid, signal);
+	return ret < 0 ? -ret : 0;
+}
+
+void Sysdeps<Yield>::operator()() { syscall(SYS_YIELD); }
 
 int Sysdeps<ClockGet>::operator()(int clock, time_t *secs, long *nanos) {
 	struct timespec time;

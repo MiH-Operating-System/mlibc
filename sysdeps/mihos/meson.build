@@ -24,6 +24,7 @@ if not headers_only
 		'entry.cpp',
 		'sysdeps.cpp',
 		'syscall.cpp',
+		'thread.S',
 	)
 endif
 
